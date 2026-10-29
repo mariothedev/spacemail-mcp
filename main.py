@@ -12,12 +12,13 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 
-from auth import AuthentikTokenVerifier
+from auth import JWTTokenVerifier
 
 load_dotenv(Path(__file__).with_name(".env"), override=True)
 
-issuer = os.environ["AUTHENTIK_ISSUER"]
 resource_url = os.environ["MCP_RESOURCE_URL"]
+issuer = os.environ.get("JWT_ISSUER", resource_url)
+audience = os.environ.get("JWT_AUDIENCE", resource_url)
 if not resource_url.startswith("https://"):
     raise ValueError("MCP_RESOURCE_URL must use HTTPS")
 
@@ -26,11 +27,7 @@ mcp = FastMCP(
     host="0.0.0.0",
     port=int(os.environ.get("PORT", "8000")),
     stateless_http=True,
-    token_verifier=AuthentikTokenVerifier(
-        issuer,
-        os.environ["AUTHENTIK_AUDIENCE"],
-        os.environ["AUTHENTIK_JWKS_URL"],
-    ),
+    token_verifier=JWTTokenVerifier(os.environ["JWT_SECRET"], issuer, audience),
     auth=AuthSettings(
         issuer_url=issuer,
         resource_server_url=resource_url,

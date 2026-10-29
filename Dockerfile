@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && useradd --create-home app
 
-COPY --chown=app:app main.py auth.py .
+COPY --chown=app:app main.py auth.py generate_token.py .
 
 USER app
 

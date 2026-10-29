@@ -1,81 +1,86 @@
 # spacemail-mcp
 
-Install and run (Python 3.10+; configure Authentik below first):
+An authenticated Streamable HTTP MCP server for your Spacemail mailbox.
+
+## Configuration
+
+Set these variables in Dokploy, or in `.env` beside `main.py` for local runs
+(`.env` values take precedence):
+
+```dotenv
+SPACEMAIL_USER=you@example.com
+SPACEMAIL_PASSWORD=your-mail-password
+MCP_RESOURCE_URL=https://mail.example.com/mcp
+JWT_SECRET=replace-with-a-long-random-secret
+```
+
+Generate a secret with:
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(48))'
+```
+
+The secret must contain at least 32 bytes. Store it securely, never commit it,
+and never give it to MCP clients: anyone with the secret can mint any permission.
+Optional `JWT_ISSUER` and `JWT_AUDIENCE` both default to `MCP_RESOURCE_URL`.
+The issuer must be an HTTPS URL (as required by the SDK's auth metadata).
+Missing configuration or a short secret prevents startup.
+
+## Generate a client token
+
+Install dependencies (Python 3.10+), then generate a token using the same
+configuration/secret as the server:
 
 ```bash
 pip install -r requirements.txt
-python main.py
+# Read-only token, valid for one hour by default:
+python generate_token.py
+# Explicit permissions and lifetime in seconds:
+python generate_token.py --subject personal-client --expires-in 3600 \
+  --scopes spacemail:read spacemail:send spacemail:delete
 ```
 
-Set `SPACEMAIL_USER` (your full email address) and `SPACEMAIL_PASSWORD` in
-`.env` beside `main.py`, or in the OS environment. Values in `.env` take precedence.
+The script prints the token. Treat it like a password. On Dokploy you can also
+run `python generate_token.py` inside the container, where the environment is set.
+There is no public login or token-issuing endpoint.
+
+Configure your MCP client to connect to `https://mail.example.com/mcp` and send:
+
+```http
+Authorization: Bearer <generated-token>
+```
+
+Clients must support custom bearer tokens; this is not an OAuth login flow.
+Tokens are HS256-signed JWTs. The server validates signature, issuer, audience,
+expiration, issued-at and, if present, not-before. Every tool checks its own
+required scope before accessing mail. Invalid/missing tokens return HTTP 401;
+missing tool permissions return a tool error without performing the operation.
+Tokens expire automatically. There is no per-token revocation list; rotating
+`JWT_SECRET` and restarting the server revokes all existing tokens.
 
 ## Tools
 
 - `read_emails(limit=5)`: Read up to 20 recent INBOX emails without marking them
-  as read. Returns UIDs for use with deletion.
-- `send_email_to_self(subject, body)`: Send a plain-text email only to your own
-  configured address, using SMTP over TLS on port 465.
-- `delete_email(uid)`: **Permanently and irreversibly delete** one INBOX email
-  by UID, without moving it to Trash. Requires IMAP UIDPLUS support so other
-  emails marked for deletion are not also purged.
+  as read. Returns UIDs for deletion. Requires `spacemail:read`.
+- `send_email_to_self(subject, body)`: Send plain-text mail only to your configured
+  address. Requires `spacemail:send`.
+- `delete_email(uid)`: **Permanently and irreversibly delete** one INBOX email,
+  not to Trash. Requires `spacemail:delete` and server UIDPLUS support for safe
+  targeted deletion.
 
-IMAP uses TLS on port 993. Both protocols connect to `mail.spacemail.com`.
+All clients access the same configured mailbox. IMAP uses TLS on port 993 and
+SMTP uses TLS on port 465, both at `mail.spacemail.com`.
 
 ## Deploy with Dokploy
 
-1. Create an application from this repository and select the Dockerfile build type.
-2. Set mail credentials and the Authentik variables below in Dokploy's environment settings.
+1. Create an application from this repository; select the Dockerfile build type.
+2. Set the configuration variables above in Dokploy's environment settings.
 3. Route your HTTPS domain to container port **8000**.
-4. Connect your MCP client to `https://your-domain/mcp` using Streamable HTTP.
+4. Forward the Authorization header unchanged and use the `/mcp` endpoint.
 
-The image runs as a non-root user and excludes `.env` files. It defaults to
-`MCP_TRANSPORT=streamable-http` and `PORT=8000`. Authentication requires HTTP;
-stdio is no longer supported. Missing authentication configuration prevents startup.
+The image runs as a non-root user and excludes `.env` files. `PORT` defaults to
+8000. Only `MCP_TRANSPORT=streamable-http` is supported; authentication requires
+HTTP. Stateless HTTP avoids sharing MCP sessions between identities.
 
-## Authentik authentication
-
-Create an OAuth2/OpenID Connect provider and application in Authentik:
-
-1. Select an **asymmetric signing key** for the provider (RSA / RS256).
-2. Configure redirect URIs for your MCP client's OAuth callback. Use authorization
-   code with PKCE where supported. Restrict application access to the intended
-   users/groups using Authentik policies: this server accesses one shared mailbox.
-3. Add/select scope mappings for the permissions you want to grant:
-   `spacemail:read`, `spacemail:send`, and `spacemail:delete`. Ensure those names
-   appear in the **access token's space-separated `scope` claim**. Clients must
-   request the desired scopes. Restrict who can receive destructive permissions
-   in Authentik; a requested scope is not itself proof of entitlement.
-4. From the provider's OpenID discovery document, copy the exact `issuer` and
-   `jwks_uri`. Configure the following variables (example values only):
-
-```dotenv
-AUTHENTIK_ISSUER=https://auth.example.com/application/o/spacemail/
-AUTHENTIK_JWKS_URL=https://auth.example.com/application/o/spacemail/jwks/
-AUTHENTIK_AUDIENCE=your-expected-access-token-audience
-MCP_RESOURCE_URL=https://mail.example.com/mcp
-```
-
-The expected audience must match the access tokens Authentik issues for this
-server (often the provider's client ID); do not use an unrelated application's
-client ID. Prefer a dedicated provider/audience for this mailbox. The issuer
-must match exactly, including any trailing slash. Only HTTPS issuer/JWKS URLs
-and RS256 signatures are accepted; keys are cached and refreshed via JWKS.
-No client secret is needed by this server to verify tokens.
-
-Clients send `Authorization: Bearer <access_token>` on every MCP HTTP request.
-Use an **access token**, not an ID token or Authentik browser-session cookie.
-The server verifies signature, issuer, audience, expiration, issued-at and,
-when present, not-before. Each tool then checks its required scope before mail
-access. Read permission does not grant send or delete permission.
-Invalid/missing tokens are rejected by the HTTP authentication middleware;
-missing tool permissions return a tool error without executing the operation.
-
-The SDK publishes OAuth protected-resource metadata for discovery. This does
-not add OAuth client registration to Authentik: configure the client there
-explicitly if needed. Your client must support Authentik's OAuth flow or accept
-an externally obtained access token. Forward the Authorization header through
-Dokploy's proxy unchanged, use HTTPS, and do not expose an alternative unprotected
-mail endpoint. Stateless HTTP avoids sharing MCP sessions between identities.
-
-Run authentication tests with `python -m unittest test_auth.py`.
+For local runs with configuration set: `python main.py`.
+Run tests with `python -m unittest test_auth.py`.

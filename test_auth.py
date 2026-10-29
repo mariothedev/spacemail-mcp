@@ -6,21 +6,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import jwt
-from cryptography.hazmat.primitives.asymmetric import rsa
 
-from auth import AuthentikTokenVerifier
+from auth import JWTTokenVerifier
 
 
 class TokenTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
     def setUp(self):
-        self.verifier = AuthentikTokenVerifier(
-            "https://auth.example/application/o/spacemail/",
-            "spacemail-client",
-            "https://auth.example/application/o/spacemail/jwks/",
+        self.key = "test-secret-not-for-production-" + "x" * 40
+        self.verifier = JWTTokenVerifier(
+            self.key, "https://mail.example/mcp", "spacemail-client",
         )
         self.claims = {
             "iss": self.verifier.issuer,
@@ -31,18 +25,13 @@ class TokenTests(unittest.TestCase):
             "scope": "spacemail:read spacemail:send",
         }
 
-    def verify(self, claims=None, key=None, algorithm="RS256"):
+    def verify(self, claims=None, key=None, algorithm="HS256"):
         token = jwt.encode(
             self.claims if claims is None else claims,
             key or self.key,
             algorithm=algorithm,
-            headers={"kid": "test-key"},
         )
-        with patch.object(
-            self.verifier.jwks, "get_signing_key_from_jwt",
-            return_value=SimpleNamespace(key=self.key.public_key()),
-        ):
-            return asyncio.run(self.verifier.verify_token(token))
+        return asyncio.run(self.verifier.verify_token(token))
 
     def test_valid_token(self):
         token = self.verify()
@@ -68,27 +57,24 @@ class TokenTests(unittest.TestCase):
                 self.assertIsNone(self.verify(claims))
 
     def test_wrong_signature(self):
-        wrong_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        self.assertIsNone(self.verify(key=wrong_key))
+        self.assertIsNone(self.verify(key="another-secret-" + "y" * 64))
 
     def test_wrong_algorithm(self):
-        self.assertIsNone(self.verify(key="a" * 64, algorithm="HS256"))
+        self.assertIsNone(self.verify(algorithm="HS384"))
 
-    def test_unavailable_jwks(self):
-        with patch.object(
-            self.verifier.jwks, "get_signing_key_from_jwt",
-            side_effect=jwt.PyJWKClientConnectionError("unavailable"),
-        ):
-            self.assertIsNone(asyncio.run(self.verifier.verify_token("invalid")))
+    def test_malformed_token(self):
+        self.assertIsNone(asyncio.run(self.verifier.verify_token("invalid")))
+
+    def test_weak_secret(self):
+        with self.assertRaises(ValueError):
+            JWTTokenVerifier("short", "issuer", "audience")
 
 
 class PermissionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with patch.dict(os.environ, {
-            "AUTHENTIK_ISSUER": "https://auth.example/application/o/spacemail/",
-            "AUTHENTIK_AUDIENCE": "spacemail-client",
-            "AUTHENTIK_JWKS_URL": "https://auth.example/application/o/spacemail/jwks/",
+            "JWT_SECRET": "test-secret-" + "x" * 64,
             "MCP_RESOURCE_URL": "https://mail.example/mcp",
         }):
             import main

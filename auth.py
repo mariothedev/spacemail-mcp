@@ -1,38 +1,30 @@
-"""Validate Authentik-signed access tokens for this resource server."""
+"""Validate locally issued HS256 bearer tokens."""
 
-import asyncio
 import logging
-from urllib.parse import urlparse
 
 import jwt
-from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken
 
 logger = logging.getLogger(__name__)
+SCOPES = ("spacemail:read", "spacemail:send", "spacemail:delete")
 
 
-class AuthentikTokenVerifier:
-    def __init__(self, issuer: str, audience: str, jwks_url: str):
-        for url in (issuer, jwks_url):
-            if urlparse(url).scheme != "https" or not urlparse(url).netloc:
-                raise ValueError("Authentik issuer and JWKS URL must use HTTPS")
-        if not audience:
-            raise ValueError("AUTHENTIK_AUDIENCE must not be empty")
+class JWTTokenVerifier:
+    def __init__(self, secret: str, issuer: str, audience: str):
+        if len(secret.encode("utf-8")) < 32:
+            raise ValueError("JWT_SECRET must contain at least 32 bytes; use a random secret")
+        if not issuer or not audience:
+            raise ValueError("JWT issuer and audience must not be empty")
+        self.secret = secret
         self.issuer = issuer
         self.audience = audience
-        self.jwks = PyJWKClient(jwks_url, timeout=10)
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        # JWKS retrieval is blocking; do not block the server's event loop.
-        return await asyncio.to_thread(self._verify, token)
-
-    def _verify(self, token: str) -> AccessToken | None:
         try:
-            key = self.jwks.get_signing_key_from_jwt(token)
             claims = jwt.decode(
                 token,
-                key.key,
-                algorithms=["RS256"],
+                self.secret,
+                algorithms=["HS256"],
                 issuer=self.issuer,
                 audience=self.audience,
                 options={"require": ["iss", "aud", "exp", "sub", "iat"]},
@@ -42,7 +34,7 @@ class AuthentikTokenVerifier:
                 return None
             return AccessToken(
                 token=token,
-                client_id=claims.get("azp") or claims["sub"],
+                client_id=claims["sub"],
                 subject=claims["sub"],
                 scopes=scope.split(),
                 expires_at=claims["exp"],
