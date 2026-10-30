@@ -1,40 +1,40 @@
-"""Validate locally issued HS256 bearer tokens."""
+"""Validate Authentik-issued RS256 bearer tokens."""
 
 import logging
 
 import jwt
+from jwt import PyJWKClient
 from mcp.server.auth.provider import AccessToken
 
 logger = logging.getLogger(__name__)
 SCOPES = ("spacemail:read", "spacemail:send", "spacemail:delete")
 
 
-class JWTTokenVerifier:
-    def __init__(self, secret: str, issuer: str, audience: str):
-        if len(secret.encode("utf-8")) < 32:
-            raise ValueError("JWT_SECRET must contain at least 32 bytes; use a random secret")
-        if not issuer or not audience:
-            raise ValueError("JWT issuer and audience must not be empty")
-        self.secret = secret
+class AuthentikTokenVerifier:
+    def __init__(self, issuer: str, audience: str, jwks_url: str):
+        if not issuer or not audience or not jwks_url:
+            raise ValueError("Authentik issuer, audience and JWKS URL must not be empty")
         self.issuer = issuer
         self.audience = audience
+        self.jwks = PyJWKClient(jwks_url)
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
+            key = self.jwks.get_signing_key_from_jwt(token).key
             claims = jwt.decode(
                 token,
-                self.secret,
-                algorithms=["HS256"],
+                key,
+                algorithms=["RS256"],
                 issuer=self.issuer,
                 audience=self.audience,
-                options={"require": ["iss", "aud", "exp", "sub", "iat"]},
+                options={"require": ["iss", "aud", "exp", "sub"]},
             )
             scope = claims.get("scope", "")
             if not isinstance(scope, str):
                 return None
             return AccessToken(
                 token=token,
-                client_id=claims["sub"],
+                client_id=claims.get("azp", claims["sub"]),
                 subject=claims["sub"],
                 scopes=scope.split(),
                 expires_at=claims["exp"],
