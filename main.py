@@ -149,10 +149,7 @@ def send_email_to_self(subject: str, body: str) -> dict[str, str]:
 
 @mcp.tool()
 def delete_email(uid: str) -> dict[str, str]:
-    """Permanently delete an INBOX email using its UID from read_emails.
-
-    This is irreversible and does not move the email to Trash.
-    """
+    """Move an INBOX email to Trash using its UID from read_emails."""
     require_scope("spacemail:delete")
     if not uid.isascii() or not uid.isdecimal() or not 1 <= int(uid) <= 4294967295:
         raise ValueError("uid must be a positive 32-bit IMAP UID")
@@ -172,8 +169,8 @@ def delete_email(uid: str) -> dict[str, str]:
         if status != "OK":
             raise RuntimeError("Could not open inbox")
 
-        if b"UIDPLUS" not in mailbox.capabilities:
-            raise RuntimeError("Server must support UIDPLUS for safe targeted deletion")
+        # if b"UIDPLUS" not in mailbox.capabilities:
+        #     raise RuntimeError("Server must support UIDPLUS for safe targeted deletion")
 
         status, data = mailbox.uid("search", None, "UID", uid)
         if status != "OK":
@@ -181,15 +178,20 @@ def delete_email(uid: str) -> dict[str, str]:
         if not data or not data[0]:
             raise ValueError("Email UID not found in INBOX")
 
-        status, _ = mailbox.uid("store", uid, "+FLAGS.SILENT", r"(\Deleted)")
+        status, _ = mailbox.uid("move", uid, "Trash")
         if status != "OK":
-            raise RuntimeError("Could not mark email for deletion")
+            raise RuntimeError("Could not move email to Trash")
 
-        status, _ = mailbox.uid("expunge", uid)
-        if status != "OK":
-            raise RuntimeError("Could not expunge email; it remains marked for deletion")
+#         status, _ = mailbox.uid("store", uid, "+FLAGS.SILENT", r"(\Deleted)")
+#         if status != "OK":
+#             raise RuntimeError("Could not mark email for deletion")
+#
+#         status, _ = mailbox.uid("expunge", uid)
+#         if status != "OK":
+#             raise RuntimeError("Could not expunge email; it remains marked for deletion")
 
-    return {"status": "permanently_deleted", "uid": uid}
+    # return {"status": "permanently_deleted", "uid": uid}
+    return {"status": "moved_to_trash", "uid": uid}
 
 
 if __name__ == "__main__":
